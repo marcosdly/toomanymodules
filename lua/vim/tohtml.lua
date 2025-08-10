@@ -171,7 +171,7 @@ local background_color_cache = nil
 --- @type string?
 local foreground_color_cache = nil
 
-local len = vim.api.nvim_strwidth
+local len = string.len
 
 --- @see https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
 --- @param color "background"|"foreground"|integer
