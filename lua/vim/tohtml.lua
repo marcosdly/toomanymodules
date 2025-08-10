@@ -58,23 +58,7 @@
 --- @field [3] any[][] virt_text
 --- @field [4] any[][] overlay_text
 
---- @type string[]
-local notifications = {}
-
----@param msg string
-local function notify(msg)
-  if #notifications == 0 then
-    vim.schedule(function()
-      if #notifications > 1 then
-        vim.notify(('TOhtml: %s (+ %d more warnings)'):format(notifications[1], #notifications - 1))
-      elseif #notifications == 1 then
-        vim.notify('TOhtml: ' .. notifications[1])
-      end
-      notifications = {}
-    end)
-  end
-  table.insert(notifications, msg)
-end
+local notify = print
 
 local HIDE_ID = -1
 -- stylua: ignore start
