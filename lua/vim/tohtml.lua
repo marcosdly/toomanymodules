@@ -183,27 +183,15 @@ local function try_query_terminal_color(color)
   elseif color == 'background' then
     parameter = 11
   end
-  --- @type string?
-  local hex = nil
-  local au = vim.api.nvim_create_autocmd('TermResponse', {
-    once = true,
-    callback = function(args)
-      hex = '#'
-        .. table.concat({
-          args.data.sequence:match('\027%]%d+;%d*;?rgb:(%w%w)%w%w/(%w%w)%w%w/(%w%w)%w%w'),
-        })
-    end,
-  })
+
+  local ctermstr
   if type(color) == 'number' then
-    io.stdout:write(('\027]%s;%s;?\027\\'):format(parameter, color))
+    ctermstr = ('\027]%s;%s;?\027\\'):format(parameter, color)
   else
-    io.stdout:write(('\027]%s;?\027\\'):format(parameter))
+    ctermstr = ('\027]%s;?\027\\'):format(parameter)
   end
-  vim.wait(100, function()
-    return hex and true or false
-  end)
-  pcall(vim.api.nvim_del_autocmd, au)
-  return hex
+
+  return cterm_to_hex(ctermstr)
 end
 
 --- @param colorstr string
