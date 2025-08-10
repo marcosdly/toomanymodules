@@ -1,0 +1,6 @@
+{
+  "Lua.format.enable": false,
+  "Lua.telemetry.enable": false,
+  "Lua.runtime.version": "Lua 5.1",
+  "Lua.diagnostics.disable": [ "different-requires" ]
+}
