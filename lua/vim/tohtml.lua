@@ -60,6 +60,43 @@
 
 local notify = print
 
+local function tbl_extend(list, other)
+  for _, value in ipairs(other) do
+    table.insert(list, value)
+  end
+end
+
+local function tbl_flatten(list, out, offset)
+  local result = out or {}
+  offset = offset or 0
+
+  local i = 0
+  for tag_name, value in ipairs(list) do
+    local index = type(tag_name) == 'number' and tag_name or nil
+    if type(value) == 'table' then
+      local is_tag = type(tag_name) == 'string'
+      if is_tag then
+        table.insert(result, ('<%s>'):format(tag_name))
+        i = i + 1
+      end
+      tbl_flatten(value, result, offset + i)
+      if is_tag then
+        table.insert(result, ('</%s>'):format(tag_name))
+        i = i + 1
+      end
+    else
+      if index then
+        table.insert(result, offset + index, value)
+      else
+        table.insert(result, value)
+      end
+      i = i + 1
+    end
+  end
+
+  return result
+end
+
 local HIDE_ID = -1
 -- stylua: ignore start
 local cterm_8_to_hex={
@@ -355,12 +392,12 @@ local function styletable_insert_range(state, start_row, start_col, end_row, end
   _style_line_insert(styletable[end_row], end_col, 2, hl_group)
 end
 
---- @param bufnr integer
+--- @param text string[]
 --- @return vim.tohtml.styletable
-local function generate_styletable(bufnr)
+local function generate_styletable(text)
   --- @type vim.tohtml.styletable
   local styletable = {}
-  for row = 1, vim.api.nvim_buf_line_count(bufnr) + 1 do
+  for row = 1, #text do
     styletable[row] = { virt_lines = {}, pre_text = {} }
   end
   return styletable
@@ -953,80 +990,69 @@ local function name_to_closetag(_)
 end
 
 --- @param str string
---- @param tabstop string|false?
+--- @param indent string
 --- @return string
-local function html_escape(str, tabstop)
+local function html_escape(str, indent)
   str = str:gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;'):gsub('"', '&quot;')
-  if tabstop then
+  if indent then
     --- @type string
-    str = str:gsub('\t', tabstop)
+    str = str:gsub('\t', indent)
   end
   return str
 end
 
---- @param out string[]
---- @param state vim.tohtml.state.global
-local function extend_style(out, state)
-  table.insert(out, '<style>')
-  table.insert(out, ('* {font-family: %s}'):format(state.font))
-  table.insert(
-    out,
-    ('body {background-color: %s; color: %s}'):format(state.background, state.foreground)
-  )
-  for hlid, name in pairs(state.highlights_name) do
-    --TODO(altermo) use local namespace (instead of global 0)
-    local fg = vim.fn.synIDattr(hlid, 'fg#')
-    local bg = vim.fn.synIDattr(hlid, 'bg#')
-    local sp = vim.fn.synIDattr(hlid, 'sp#')
-    local decor_line = {}
-    if vim.fn.synIDattr(hlid, 'underline') ~= '' then
-      table.insert(decor_line, 'underline')
-    end
-    if vim.fn.synIDattr(hlid, 'strikethrough') ~= '' then
-      table.insert(decor_line, 'line-through')
-    end
-    if vim.fn.synIDattr(hlid, 'undercurl') ~= '' then
-      table.insert(decor_line, 'underline')
-    end
-    local c = {
-      color = fg ~= '' and cterm_to_hex(fg) or nil,
-      ['background-color'] = bg ~= '' and cterm_to_hex(bg) or nil,
-      ['font-style'] = vim.fn.synIDattr(hlid, 'italic') ~= '' and 'italic' or nil,
-      ['font-weight'] = vim.fn.synIDattr(hlid, 'bold') ~= '' and 'bold' or nil,
-      ['text-decoration-line'] = not vim.tbl_isempty(decor_line) and table.concat(decor_line, ' ')
-        or nil,
-      -- TODO(ribru17): fallback to displayed text color if sp not set
-      ['text-decoration-color'] = sp ~= '' and cterm_to_hex(sp) or nil,
-      --TODO(altermo) if strikethrough and undercurl then the strikethrough becomes wavy
-      ['text-decoration-style'] = vim.fn.synIDattr(hlid, 'undercurl') ~= '' and 'wavy' or nil,
-    }
-    local attrs = {}
-    for attr, val in pairs(c) do
-      table.insert(attrs, attr .. ': ' .. val)
-    end
-    table.insert(
-      out,
-      '.' .. highlight_name_to_class_name(name) .. ' {' .. table.concat(attrs, '; ') .. '}'
-    )
-  end
-  table.insert(out, '</style>')
-end
+--- @param opt vim.tohtml.opt
+--- @param hl table
+--- @return string[]
+local function generate_css_rules(opt, hl)
+  local fonts = table.concat(opt.font --[[@as (string[])]], ',')
+  local body_bg, body_fg = hl.Normal.bg, hl.Normal.fg
 
---- @param out string[]
---- @param state vim.tohtml.state.global
-local function extend_head(out, state)
-  table.insert(out, '<head>')
-  table.insert(out, '<meta charset="UTF-8">')
-  if state.title ~= false then
-    table.insert(out, ('<title>%s</title>'):format(state.title))
+  local style = {
+    ('* {font-family: %s}'):format(fonts),
+    ('body {background-color: %s; color: %s; display: flex}'):format(body_bg, body_fg),
+  }
+
+  for name, props in pairs(hl) do
+    local cssrules = {
+      color = props.fg,
+      ['background-color'] = props.bg,
+      ['font-style'] = props.italic and 'italic' or nil,
+      ['font-weight'] = props.bold and 'bold' or nil,
+      -- TODO(ribru17): fallback to displayed text color if sp not set
+      ['text-decoration-color'] = props.sp,
+      --TODO(altermo) if strikethrough and undercurl then the strikethrough becomes wavy
+      ['text-decoration-style'] = props.undercurl and 'wavy' or nil,
+    }
+    do
+      --TODO(altermo) use local namespace (instead of global 0)
+      local decor_line = {}
+      if props.underline then
+        table.insert(decor_line, 'underline')
+      end
+      if props.strikethrough then
+        table.insert(decor_line, 'line-through')
+      end
+      if props.undercurl then
+        table.insert(decor_line, 'underline')
+      end
+      if #decor_line > 0 then
+        cssrules['text-decoration-line'] = table.concat(decor_line, ' ')
+      end
+    end
+    local attrs
+    do
+      local attr_lines = {}
+      for attr, val in pairs(cssrules) do
+        table.insert(attr_lines, ('%s: %s;'):format(attr, val))
+      end
+      attrs = table.concat(attr_lines)
+    end
+    local class_name = highlight_name_to_class_name(name)
+    table.insert(style, ('.%s {%s}'):format(class_name, attrs))
   end
-  local colorscheme = vim.api.nvim_exec2('colorscheme', { output = true }).output
-  table.insert(
-    out,
-    ('<meta name="colorscheme" content="%s"></meta>'):format(html_escape(colorscheme))
-  )
-  extend_style(out, state)
-  table.insert(out, '</head>')
+
+  return style
 end
 
 --- @param out string[]
@@ -1104,9 +1130,10 @@ end
 
 --- @param out string[]
 --- @param state vim.tohtml.state
+--- @return string[]
 local function extend_pre(out, state)
+  local pre = {}
   local styletable = state.style
-  table.insert(out, '<pre>')
   local out_start = #out
   local hide_count = 0
   --- @type integer[]
@@ -1218,43 +1245,24 @@ local function extend_pre(out, state)
   out[out_start] = out[out_start] .. before
   out[#out] = out[#out] .. after
   assert(#stack == 0, 'an open HTML tag was never closed')
-  table.insert(out, '</pre>')
-end
-
---- @param out string[]
---- @param fn fun()
-local function extend_body(out, fn)
-  table.insert(out, '<body style="display: flex">')
-  fn()
-  table.insert(out, '</body>')
-end
-
---- @param out string[]
---- @param fn fun()
-local function extend_html(out, fn)
-  table.insert(out, '<!DOCTYPE html>')
-  table.insert(out, '<html>')
-  fn()
-  table.insert(out, '</html>')
 end
 
 --- @param winid integer
 --- @param global_state vim.tohtml.state.global
 --- @return vim.tohtml.state
-local function global_state_to_state(winid, global_state)
+local function global_state_to_state(winid, text, global_state)
   local bufnr = vim.api.nvim_win_get_buf(winid)
   local opt = global_state.conf
   local width = opt.width or vim.bo[bufnr].textwidth
   if not width or width < 1 then
     width = vim.api.nvim_win_get_width(winid)
   end
-  local range = opt.range or { 1, vim.api.nvim_buf_line_count(bufnr) }
   local state = setmetatable({
     winid = winid == 0 and vim.api.nvim_get_current_win() or winid,
     opt = vim.wo[winid],
-    style = generate_styletable(bufnr),
+    style = generate_styletable(text),
     bufnr = bufnr,
-    tabstop = (' '):rep(vim.bo[bufnr].tabstop),
+    tabstop = ' ',
     width = width,
     start = range[1],
     end_ = range[2],
@@ -1263,37 +1271,28 @@ local function global_state_to_state(winid, global_state)
 end
 
 --- @param opt vim.tohtml.opt
---- @param title? string
+--- @param hi table<string, table<string, table<string, string>>>
 --- @return vim.tohtml.state.global
-local function opt_to_global_state(opt, title)
-  local fonts = {}
-  if opt.font then
-    fonts = type(opt.font) == 'string' and { opt.font } or opt.font --[[@as (string[])]]
-    for i, v in pairs(fonts) do
-      fonts[i] = ('"%s"'):format(v)
+local function opt_to_global_state(opt, hi)
+  local has_monospace = false
+  local fonts = type(opt.font) == 'string' and { opt.font } or opt.font --[[@as (string[])]]
+  for i, v in pairs(fonts) do
+    if v == 'monospace' then
+      -- Generic family names (monospace here) must not be quoted
+      -- because the browser recognizes them as font families.
+      fonts[i] = v
+      has_monospace = true
     end
-  elseif vim.o.guifont:match('^[^:]+') then
-    -- Example:
-    -- Input: "Font,Escape\,comma, Ignore space after comma"
-    -- Output: { "Font","Escape,comma","Ignore space after comma" }
-    local prev = ''
-    for name in vim.gsplit(vim.o.guifont:match('^[^:]+'), ',', { trimempty = true }) do
-      if vim.endswith(name, '\\') then
-        prev = prev .. vim.trim(name:sub(1, -2) .. ',')
-      elseif vim.trim(name) ~= '' then
-        table.insert(fonts, ('"%s%s"'):format(prev, vim.trim(name)))
-        prev = ''
-      end
-    end
+    fonts[i] = ('"%s"'):format(v)
   end
-  -- Generic family names (monospace here) must not be quoted
-  -- because the browser recognizes them as font families.
-  table.insert(fonts, 'monospace')
+  if not has_monospace then
+    table.insert(fonts, 'monospace')
+  end
   --- @type vim.tohtml.state.global
   local state = {
-    background = get_background_color(),
-    foreground = get_foreground_color(),
-    title = opt.title or title or false,
+    background = opt.theme == 'light' and hi.light.Normal.bg or hi.dark.Normal.bg,
+    foreground = opt.theme == 'light' and hi.light.Normal.fg or hi.dark.Normal.fg,
+    title = opt.title,
     font = table.concat(fonts, ','),
     highlights_name = {},
     conf = opt,
@@ -1332,30 +1331,6 @@ local function state_generate_style(state)
   end)
 end
 
---- @param winid integer
---- @param opt? vim.tohtml.opt
---- @return string[]
-local function win_to_html(winid, opt)
-  opt = opt or {}
-  local title = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(winid))
-
-  local global_state = opt_to_global_state(opt, title)
-  local state = global_state_to_state(winid, global_state)
-  state_generate_style(state)
-
-  local html = {}
-  table.insert(html, '<!-- vim: set nomodeline: -->')
-  extend_html(html, function()
-    extend_head(html, global_state)
-    extend_body(html, function()
-      extend_pre(html, state)
-    end)
-  end)
-  return html
-end
-
-local M = {}
-
 --- @class vim.tohtml.opt
 --- @inlinedoc
 ---
@@ -1368,24 +1343,73 @@ local M = {}
 --- @field number_lines? boolean
 ---
 --- Fonts to use.
---- (default: `guifont`)
+--- (default: `monospace`)
 --- @field font? string[]|string
+---
+--- Indent
+--- (default: 2 whitespaces)
+--- @field indent? string
 ---
 --- Width used for items which are either right aligned or repeat a character
 --- infinitely.
---- (default: 'textwidth' if non-zero or window width otherwise)
+--- (default: 100)
 --- @field width? integer
 ---
 --- Range of rows to use.
 --- (default: entire buffer)
 --- @field range? integer[]
+---
+--- Theme name
+--- (default: 'dark')
+--- @field theme? string
+---
+--- Colorscheme name
+--- (default: 'vim')
+--- @field colorscheme? string
 
 --- Converts the buffer shown in the window {winid} to HTML and returns the output as a list of string.
---- @param winid? integer Window to convert (defaults to current window)
+--- @param text? string Window to convert (defaults to current window)
 --- @param opt? vim.tohtml.opt Optional parameters.
 --- @return string[]
-function M.tohtml(winid, opt)
-  return win_to_html(winid or 0, opt)
+local function tohtml(text, opt)
+  opt = opt or {}
+  opt.title = type(opt.title) == 'string' and opt.title or nil
+  opt.number_lines = opt.number_lines or false
+  opt.font = opt.font or 'monospace'
+  opt.indent = opt.indent or '  '
+  opt.width = opt.width or 100
+  opt.range = opt.range or { 1, #text }
+  opt.theme = opt.theme or 'dark'
+  opt.colorscheme = opt.colorscheme or 'vim'
+
+  local hi = require('colors/' .. opt.theme)
+
+  -- local global_state = opt_to_global_state(opt, hi)
+  -- local state = global_state_to_state(winid, global_state)
+  -- state_generate_style(state)
+
+  local html = {
+    '<!DOCTYPE html>',
+    html = {
+      head = {
+        '<meta charset="UTF-8">',
+        ('<meta name="colorscheme" content="%s"></meta>'):format(
+          html_escape(opt.colorscheme, opt.indent)
+        ),
+        -- ('<title>%s</title>'):format(opt.title),
+        title = {
+          opt.title,
+        },
+        style = generate_css_rules(opt, hi[opt.theme]),
+      },
+      body = {
+        pre = text,
+      },
+    },
+  }
+
+  -- extend_pre(html, state)
+  return tbl_flatten(html)
 end
 
-return M
+return tohtml
