@@ -9,7 +9,7 @@
 -- This is Vim's default color scheme. It doesn't define the Normal
 -- highlighting, it uses whatever the colors used to be.
 
-local hi = require('vim/hi')()
+local hi = require('vim.tohtml.hi')()
 
 --stylua: ignore start
 -- General
